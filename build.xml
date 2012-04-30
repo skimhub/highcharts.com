@@ -107,6 +107,7 @@
             <file name="BarSeries.js"/>
             <file name="ScatterSeries.js"/>
             <file name="PieSeries.js"/>
+            <file name="DonutSeries.js"/>
             <file name="Facade.js"/>
             <file name="Outro.js"/>
         </filelist>
@@ -140,6 +141,7 @@
             <file name="BarSeries.js"/>
             <file name="ScatterSeries.js"/>
             <file name="PieSeries.js"/>
+            <file name="DonutSeries.js"/>
             <file name="DataGrouping.js"/>
             <file name="OHLCSeries.js"/>
             <file name="CandlestickSeries.js"/>
