@@ -135,6 +135,7 @@ defaultOptions = {
 				//fillColor: null,
 				states: { // states for a single point
 					hover: {
+						enabled: true
 						//radius: base + 2
 					},
 					select: {
@@ -209,6 +210,13 @@ defaultOptions = {
 		borderWidth: 1,
 		borderColor: '#909090',
 		borderRadius: 5,
+		navigation: {
+			// animation: true,
+			activeColor: '#3E576F',
+			// arrowSize: 12
+			inactiveColor: '#CCC'
+			// style: {} // text styles
+		},
 		// margin: 10,
 		// reversed: false,
 		shadow: false,
@@ -223,10 +231,10 @@ defaultOptions = {
 		},
 		itemHoverStyle: {
 			//cursor: 'pointer', removed as of #601
-			color: '#000000'
+			color: '#000'
 		},
 		itemHiddenStyle: {
-			color: '#C0C0C0'
+			color: '#CCC'
 		},
 		itemCheckboxStyle: {
 			position: ABSOLUTE,
@@ -264,6 +272,16 @@ defaultOptions = {
 		backgroundColor: 'rgba(255, 255, 255, .85)',
 		borderWidth: 2,
 		borderRadius: 5,
+		dateTimeLabelFormats: { 
+			millisecond: '%A, %b %e, %H:%M:%S.%L',
+			second: '%A, %b %e, %H:%M:%S',
+			minute: '%A, %b %e, %H:%M',
+			hour: '%A, %b %e, %H:%M',
+			day: '%A, %b %e, %Y',
+			week: 'Week from %A, %b %e, %Y',
+			month: '%B %Y',
+			year: '%Y'
+		},
 		//formatter: defaultFormatter,
 		headerFormat: '<span style="font-size: 10px">{point.key}</span><br/>',
 		pointFormat: '<span style="color:{series.color}">{series.name}</span>: <b>{point.y}</b><br/>',

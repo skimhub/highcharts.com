@@ -76,9 +76,11 @@ Chart.prototype = {
 	initSeries: function (options) {
 		var chart = this,
 			optionsChart = chart.options.chart,
-			type = options.type || optionsChart.type || optionsChart.defaultSeriesType;		
+			type = options.type || optionsChart.type || optionsChart.defaultSeriesType,
+			series = new seriesTypes[type]();
 
-		return new seriesTypes[type]().init(this, options);
+		series.init(this, options);
+		return series;
 	},
 
 	/**
@@ -100,10 +102,8 @@ Chart.prototype = {
 			redraw = pick(redraw, true); // defaults to true
 
 			fireEvent(chart, 'addSeries', { options: options }, function () {
-				chart.initSeries(options);
-				//series = chart.initSeries(options);
-				//series.isDirty = true;
-
+				series = chart.initSeries(options);
+				
 				chart.isDirtyLegend = true; // the series array is out of sync with the display
 				if (redraw) {
 					chart.redraw();
@@ -117,10 +117,14 @@ Chart.prototype = {
 	/**
 	 * Check whether a given point is within the plot area
 	 *
-	 * @param {Number} x Pixel x relative to the plot area
-	 * @param {Number} y Pixel y relative to the plot area
+	 * @param {Number} plotX Pixel x relative to the plot area
+	 * @param {Number} plotY Pixel y relative to the plot area
+	 * @param {Boolean} inverted Whether the chart is inverted
 	 */
-	isInsidePlot: function (x, y) {
+	isInsidePlot: function (plotX, plotY, inverted) {
+		var x = inverted ? plotY : plotX,
+			y = inverted ? plotX : plotY;
+			
 		return x >= 0 &&
 			x <= this.plotWidth &&
 			y >= 0 &&
@@ -451,19 +455,17 @@ Chart.prototype = {
 			btnOptions = chart.options.chart.resetZoomButton,
 			theme = btnOptions.theme,
 			states = theme.states,
-			box = btnOptions.relativeTo === 'chart' ? null : {
-				x: chart.plotLeft,
-				y: chart.plotTop,
-				width: chart.plotWidth,
-				height: chart.plotHeight
-			};
+			alignTo = btnOptions.relativeTo === 'chart' ? null : 'plotBox';
+			
 		this.resetZoomButton = chart.renderer.button(lang.resetZoom, null, null, function () { chart.zoomOut(); }, theme, states && states.hover)
 			.attr({
 				align: btnOptions.position.align,
 				title: lang.resetZoomTitle
 			})
 			.add()
-			.align(btnOptions.position, false, box);
+			.align(btnOptions.position, false, chart[alignTo]);
+		this.resetZoomButton.alignTo = alignTo;	
+			
 	},
 
 	/**
@@ -498,7 +500,7 @@ Chart.prototype = {
 		if (!event || event.resetSelection) {
 			each(chart.axes, function (axis) {
 				if (axis.options.zoomEnabled !== false) {
-					axis.setExtremes(null, null, false);
+					axis.setExtremes(null, null, false, UNDEFINED, { trigger: 'zoomout' });
 					hasZoomed = true;
 				}
 			});
@@ -508,7 +510,7 @@ Chart.prototype = {
 
 				// don't zoom more than minRange
 				if (chart.tracker[axis.isXAxis ? 'zoomX' : 'zoomY']) {
-					axis.setExtremes(axisData.min, axisData.max, false);
+					axis.setExtremes(axisData.min, axisData.max, false, UNDEFINED, { trigger: 'zoom' });
 					hasZoomed = true;
 				}
 			});
@@ -545,8 +547,8 @@ Chart.prototype = {
 			});
 		}
 
-		if (newMin > mathMin(extremes.dataMin, extremes.min) && newMax < mathMax(extremes.dataMax, extremes.max)) {
-			xAxis.setExtremes(newMin, newMax, true, false);
+		if (xAxis.series.length && newMin > mathMin(extremes.dataMin, extremes.min) && newMax < mathMax(extremes.dataMax, extremes.max)) {
+			xAxis.setExtremes(newMin, newMax, true, false, { trigger: 'pan' });
 		}
 
 		chart.mouseDownX = chartX; // set new reference for next run
@@ -707,7 +709,8 @@ Chart.prototype = {
 				width: chartWidth + PX,
 				height: chartHeight + PX,
 				textAlign: 'left',
-				lineHeight: 'normal' // #427
+				lineHeight: 'normal', // #427
+				zIndex: 0 // #1072
 			}, optionsChart.style),
 			chart.renderToClone || renderTo
 		);
@@ -868,19 +871,6 @@ Chart.prototype = {
 	},
 
 	/**
-	 * Fires endResize event on chart instance.
-	 */
-	fireEndResize: function () {
-		var chart = this;
-
-		if (chart) {
-			fireEvent(chart, 'endResize', null, function () {
-				chart.isResizing -= 1;
-			});
-		}
-	},
-
-	/**
 	 * Resize the chart to a given width and height
 	 * @param {Number} width
 	 * @param {Number} height
@@ -891,12 +881,21 @@ Chart.prototype = {
 		var chart = this,
 			chartWidth,
 			chartHeight,
-			spacingBox = chart.spacingBox;
+			spacingBox,
+			resetZoomButton = chart.resetZoomButton,
+			chartTitle = chart.title,
+			chartSubtitle = chart.subtitle,
+			fireEndResize;
 
-		var chartTitle = chart.title,
-			chartSubtitle = chart.subtitle;
-
+		// Handle the isResizing counter
 		chart.isResizing += 1;
+		fireEndResize = function () {
+			if (chart) {
+				fireEvent(chart, 'endResize', null, function () {
+					chart.isResizing -= 1;
+				});
+			}
+		};
 
 		// set the animation for the current process
 		setAnimation(animation, chart);
@@ -938,11 +937,17 @@ Chart.prototype = {
 		chart.getMargins();
 
 		// move titles
+		spacingBox = chart.spacingBox;
 		if (chartTitle) {
 			chartTitle.align(null, null, spacingBox);
 		}
 		if (chartSubtitle) {
 			chartSubtitle.align(null, null, spacingBox);
+		}
+		
+		// Move resize button (#1115)
+		if (resetZoomButton) {
+			resetZoomButton.align(null, null, chart[resetZoomButton.alignTo]);
 		}
 
 		chart.redraw(animation);
@@ -954,9 +959,9 @@ Chart.prototype = {
 		// fire endResize and set isResizing back
 		// If animation is disabled, fire without delay
 		if (globalAnimation === false) {
-			chart.fireEndResize();
+			fireEndResize();
 		} else { // else set a timeout with the animation duration
-			setTimeout(chart.fireEndResize, (globalAnimation && globalAnimation.duration) || 500);
+			setTimeout(fireEndResize, (globalAnimation && globalAnimation.duration) || 500);
 		}
 	},
 
@@ -973,21 +978,34 @@ Chart.prototype = {
 			spacingTop = optionsChart.spacingTop,
 			spacingRight = optionsChart.spacingRight,
 			spacingBottom = optionsChart.spacingBottom,
-			spacingLeft = optionsChart.spacingLeft;
+			spacingLeft = optionsChart.spacingLeft,
+			plotLeft,
+			plotTop,
+			plotWidth,
+			plotHeight;
 
-		chart.plotLeft = mathRound(chart.plotLeft);
-		chart.plotTop = mathRound(chart.plotTop);
-		chart.plotWidth = mathRound(chartWidth - chart.plotLeft - chart.marginRight);
-		chart.plotHeight = mathRound(chartHeight - chart.plotTop - chart.marginBottom);
+		chart.plotLeft = plotLeft = mathRound(chart.plotLeft);
+		chart.plotTop = plotTop = mathRound(chart.plotTop);
+		chart.plotWidth = plotWidth = mathRound(chartWidth - plotLeft - chart.marginRight);
+		chart.plotHeight = plotHeight = mathRound(chartHeight - plotTop - chart.marginBottom);
 
-		chart.plotSizeX = inverted ? chart.plotHeight : chart.plotWidth;
-		chart.plotSizeY = inverted ? chart.plotWidth : chart.plotHeight;
+		chart.plotSizeX = inverted ? plotHeight : plotWidth;
+		chart.plotSizeY = inverted ? plotWidth : plotHeight;
+		
+		chart.plotBorderWidth = optionsChart.plotBorderWidth || 0;
 
+		// Set boxes used for alignment
 		chart.spacingBox = {
 			x: spacingLeft,
 			y: spacingTop,
 			width: chartWidth - spacingLeft - spacingRight,
 			height: chartHeight - spacingTop - spacingBottom
+		};
+		chart.plotBox = {
+			x: plotLeft,
+			y: plotTop,
+			width: plotWidth,
+			height: plotHeight
 		};
 
 		each(chart.axes, function (axis) {
@@ -1026,32 +1044,31 @@ Chart.prototype = {
 			chartBackground = chart.chartBackground,
 			plotBackground = chart.plotBackground,
 			plotBorder = chart.plotBorder,
-			plotBGImage = chart.plotBGImage;
-
-		var chartBorderWidth = optionsChart.borderWidth || 0,
+			plotBGImage = chart.plotBGImage,
+			chartBorderWidth = optionsChart.borderWidth || 0,
 			chartBackgroundColor = optionsChart.backgroundColor,
 			plotBackgroundColor = optionsChart.plotBackgroundColor,
 			plotBackgroundImage = optionsChart.plotBackgroundImage,
 			mgn,
-			plotSize = {
-				x: chart.plotLeft,
-				y: chart.plotTop,
-				width: chart.plotWidth,
-				height: chart.plotHeight
-			};
+			bgAttr,
+			plotBox = chart.plotBox;
 
 		// Chart area
 		mgn = chartBorderWidth + (optionsChart.shadow ? 8 : 0);
 
 		if (chartBorderWidth || chartBackgroundColor) {
 			if (!chartBackground) {
+				
+				bgAttr = {
+					fill: chartBackgroundColor || NONE
+				};
+				if (chartBorderWidth) { // #980
+					bgAttr.stroke = optionsChart.borderColor;
+					bgAttr['stroke-width'] = chartBorderWidth;
+				}
 				chart.chartBackground = renderer.rect(mgn / 2, mgn / 2, chartWidth - mgn, chartHeight - mgn,
 						optionsChart.borderRadius, chartBorderWidth)
-					.attr({
-						stroke: optionsChart.borderColor,
-						'stroke-width': chartBorderWidth,
-						fill: chartBackgroundColor || NONE
-					})
+					.attr(bgAttr)
 					.add()
 					.shadow(optionsChart.shadow);
 			} else { // resize
@@ -1072,7 +1089,7 @@ Chart.prototype = {
 					.add()
 					.shadow(optionsChart.plotShadow);
 			} else {
-				plotBackground.animate(plotSize);
+				plotBackground.animate(plotBox);
 			}
 		}
 		if (plotBackgroundImage) {
@@ -1080,7 +1097,7 @@ Chart.prototype = {
 				chart.plotBGImage = renderer.image(plotBackgroundImage, chart.plotLeft, chart.plotTop, chart.plotWidth, chart.plotHeight)
 					.add();
 			} else {
-				plotBGImage.animate(plotSize);
+				plotBGImage.animate(plotBox);
 			}
 		}
 
@@ -1091,7 +1108,7 @@ Chart.prototype = {
 					.attr({
 						stroke: optionsChart.plotBorderColor,
 						'stroke-width': optionsChart.plotBorderWidth,
-						zIndex: 4
+						zIndex: 1
 					})
 					.add();
 			} else {
@@ -1119,7 +1136,7 @@ Chart.prototype = {
 			value;
 			
 			
-		each(['inverted', 'angular'], function (key) {
+		each(['inverted', 'angular', 'polar'], function (key) {
 			
 			// The default series type's class
 			klass = seriesTypes[optionsChart.type || optionsChart.defaultSeriesType];
@@ -1176,6 +1193,7 @@ Chart.prototype = {
 		chart.maxTicks = null; // reset for second pass
 		each(axes, function (axis) {
 			axis.setTickPositions(true); // update to reflect the new margins
+			axis.setMaxTicks();
 		});
 		chart.adjustTickAmounts();
 		chart.getMargins(); // second pass to check for new labels
@@ -1340,7 +1358,7 @@ Chart.prototype = {
 		/*jslint eqeq: false*/
 			if (useCanVG) {
 				// Delay rendering until canvg library is downloaded and ready
-				CanVGController.push(chart.firstRender, options.global.canvasToolsURL);
+				CanVGController.push(function () { chart.firstRender(); }, options.global.canvasToolsURL);
 			} else {
 				doc.attachEvent(ONREADYSTATECHANGE, function () {
 					doc.detachEvent(ONREADYSTATECHANGE, chart.firstRender);

@@ -78,8 +78,9 @@ win.HighchartsAdapter = {
 		
 		// This currently works for getting inner width and height. If adding
 		// more methods later, we need a conditional implementation for each.
-		return $(el).getStyle(method).toInt();
-		
+		if (method === 'width' || method === 'height') {
+			return $(el).getCoordinates()[method];
+		}
 	},
 
 	/**
@@ -257,6 +258,7 @@ win.HighchartsAdapter = {
 			// el.removeEvents below apperantly calls this method again. Do not quite understand why, so for now just bail out.
 			return;
 		}
+		
 		win.HighchartsAdapter.extendWithEvents(el);
 		if (type) {
 			if (type === 'unload') { // Moo self destructs before custom unload events
@@ -265,7 +267,7 @@ win.HighchartsAdapter = {
 
 			if (fn) {
 				el.removeEvent(type, fn);
-			} else {
+			} else if (el.removeEvents) { // #958
 				el.removeEvents(type);
 			}
 		} else {

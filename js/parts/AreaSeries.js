@@ -3,7 +3,7 @@
  */
 defaultPlotOptions.area = merge(defaultSeriesOptions, {
 	threshold: 0
-	// trackByArea: false, // docs
+	// trackByArea: false,
 	// lineColor: null, // overrides color, but lets fillColor be unaltered
 	// fillOpacity: 0.75,
 	// fillColor: null
@@ -89,7 +89,8 @@ var AreaSeries = extendClass(Series, {
 					fill: pick(
 						options.fillColor,
 						Color(this.color).setOpacity(options.fillOpacity || 0.75).get()
-					)
+					),
+					zIndex: 0 // #1069
 				}).add(this.group);
 		}
 	},

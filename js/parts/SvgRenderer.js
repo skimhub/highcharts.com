@@ -230,7 +230,13 @@ SVGElement.prototype = {
 					if (shadows && /^(width|height|visibility|x|y|d|transform)$/.test(key)) {
 						i = shadows.length;
 						while (i--) {
-							attr(shadows[i], key, value);
+							attr(
+								shadows[i], 
+								key, 
+								key === 'height' ? 
+									mathMax(value - (shadows[i].cutHeight || 0), 0) :
+									value
+							);
 						}
 					}
 
@@ -264,25 +270,6 @@ SVGElement.prototype = {
 
 		}
 		
-		// Workaround for our #732, WebKit's issue https://bugs.webkit.org/show_bug.cgi?id=78385
-		// TODO: If the WebKit team fix this bug before the final release of Chrome 18, remove the workaround.
-		if (isWebKit && /Chrome\/(18|19)/.test(userAgent)) {
-			if (nodeName === 'text' && (hash.x !== UNDEFINED || hash.y !== UNDEFINED)) {
-				var parent = element.parentNode,
-					next = element.nextSibling;
-			
-				if (parent) {
-					parent.removeChild(element);
-					if (next) {
-						parent.insertBefore(element, next);
-					} else {
-						parent.appendChild(element);
-					}
-				}
-			}
-		}
-		// End of workaround for #732
-		
 		return ret;
 	},
 
@@ -309,7 +296,7 @@ SVGElement.prototype = {
 	 * @param {String} id
 	 */
 	clip: function (clipRect) {
-		return this.attr('clip-path', 'url(' + this.renderer.url + '#' + clipRect.id + ')');
+		return this.attr('clip-path', clipRect ? 'url(' + this.renderer.url + '#' + clipRect.id + ')' : NONE);
 	},
 
 	/**
@@ -589,7 +576,7 @@ SVGElement.prototype = {
 				height = pick(wrapper.elemHeight, elem.offsetHeight);
 
 				// update textWidth
-				if (width > textWidth) {
+				if (width > textWidth && /[ \-]/.test(elem.innerText)) { // #983
 					css(elem, {
 						width: textWidth + PX,
 						display: 'block',
@@ -748,14 +735,14 @@ SVGElement.prototype = {
 			rad = rotation * deg2rad;
 
 		// SVG elements
-		if (element.namespaceURI === SVG_NS) {
+		if (element.namespaceURI === SVG_NS || wrapper.renderer.forExport) {
 			try { // Fails in Firefox if the container has display: none.
 				
 				bBox = element.getBBox ?
 					// SVG: use extend because IE9 is not allowed to change width and height in case
 					// of rotation (below)
 					extend({}, element.getBBox()) :
-					// Canvas renderer: // TODO: can this be removed now that we're checking for the SVG NS?
+					// Canvas renderer and legacy IE in export mode
 					{
 						width: element.offsetWidth,
 						height: element.offsetHeight
@@ -816,6 +803,10 @@ SVGElement.prototype = {
 			otherZIndex,
 			i,
 			inserted;
+			
+		if (parent) {
+			this.parentGroup = parent;
+		}
 
 		// mark as inverted
 		this.parentInverted = parent && parent.inverted;
@@ -942,29 +933,42 @@ SVGElement.prototype = {
 
 	/**
 	 * Add a shadow to the element. Must be done after the element is added to the DOM
-	 * @param {Boolean} apply
+	 * @param {Boolean|Object} shadowOptions // docs
 	 */
-	shadow: function (apply, group) {
+	shadow: function (shadowOptions, group, cutOff) {
 		var shadows = [],
 			i,
 			shadow,
 			element = this.element,
+			strokeWidth,
+			shadowWidth,
+			shadowElementOpacity,
 
 			// compensate for inverted plot area
-			transform = this.parentInverted ? '(-1,-1)' : '(1,1)';
+			transform;
 
 
-		if (apply) {
-			for (i = 1; i <= 3; i++) {
+		if (shadowOptions) {
+			shadowWidth = pick(shadowOptions.width, 3);
+			shadowElementOpacity = (shadowOptions.opacity || 0.15) / shadowWidth;
+			transform = this.parentInverted ? 
+				'(-1,-1)' : // this doesn't work 
+				'(' + (shadowOptions.offsetX || 1) + ', ' + (shadowOptions.offsetY || 1) + ')';
+			for (i = 1; i <= shadowWidth; i++) {
 				shadow = element.cloneNode(0);
+				strokeWidth = (shadowWidth * 2) + 1 - (2 * i);
 				attr(shadow, {
 					'isShadow': 'true',
-					'stroke': 'rgb(0, 0, 0)',
-					'stroke-opacity': 0.05 * i,
-					'stroke-width': 7 - 2 * i,
+					'stroke': shadowOptions.color || 'black',
+					'stroke-opacity': shadowElementOpacity * i,
+					'stroke-width': strokeWidth,
 					'transform': 'translate' + transform,
 					'fill': NONE
 				});
+				if (cutOff) {
+					attr(shadow, 'height', mathMax(attr(shadow, 'height') - strokeWidth, 0));
+					shadow.cutHeight = strokeWidth;
+				}
 
 				if (group) {
 					group.element.appendChild(shadow);
@@ -1016,8 +1020,15 @@ SVGRenderer.prototype = {
 		renderer.box = boxWrapper.element;
 		renderer.boxWrapper = boxWrapper;
 		renderer.alignedObjects = [];
-		renderer.url = isIE ? '' : loc.href.replace(/#.*?$/, '')
-			.replace(/([\('\)])/g, '\\$1'); // Page url used for internal references. #24, #672.
+		
+		// Page url used for internal references. #24, #672, #1070
+		renderer.url = (isFirefox || isWebKit) && doc.getElementsByTagName('base').length ? 
+			loc.href
+				.replace(/#.*?$/, '') // remove the hash
+				.replace(/([\('\)])/g, '\\$1') // escape parantheses and quotes
+				.replace(/ /g, '%20') : // replace spaces (needed for Safari only)
+			''; 
+			
 		renderer.defs = this.createElement('defs').add();
 		renderer.forExport = forExport;
 		renderer.gradients = {}; // Object where gradient SvgElements are stored
@@ -1038,8 +1049,8 @@ SVGRenderer.prototype = {
 				css(container, { left: 0, top: 0 });
 				rect = container.getBoundingClientRect();
 				css(container, {
-					left: (-(rect.left - pInt(rect.left))) + PX,
-					top: (-(rect.top - pInt(rect.top))) + PX
+					left: (mathCeil(rect.left) - rect.left) + PX,
+					top: (mathCeil(rect.top) - rect.top) + PX
 				});
 			};
 
@@ -1056,7 +1067,7 @@ SVGRenderer.prototype = {
 	 * has display: none. #608.
 	 */
 	isHidden: function () {
-		return !this.box.getBBox().width;			
+		return !this.boxWrapper.getBBox().width;			
 	},
 
 	/**
@@ -1079,7 +1090,11 @@ SVGRenderer.prototype = {
 		}
 
 		// Remove sub pixel fix handler
-		removeEvent(win, 'resize', renderer.subPixelFix);
+		// We need to check that there is a handler, otherwise all functions that are registered for event 'resize' are removed
+		// See issue #982
+		if (renderer.subPixelFix) {
+			removeEvent(win, 'resize', renderer.subPixelFix);
+		}
 
 		renderer.alignedObjects = null;
 
@@ -1128,7 +1143,9 @@ SVGRenderer.prototype = {
 
 		// Needed in IE9 because it doesn't report tspan's offsetHeight (#893)
 		function getLineHeightByBBox(lineNo) {
-			linePositions[lineNo] = textNode.getBBox().height;
+			linePositions[lineNo] = textNode.getBBox ?
+				textNode.getBBox().height :
+				wrapper.renderer.fontMetrics(textNode.style.fontSize).h; // #990
 			return mathRound(linePositions[lineNo] - (linePositions[lineNo - 1] || 0));
 		}
 
@@ -1375,7 +1392,8 @@ SVGRenderer.prototype = {
 		// points format: [M, 0, 0, L, 100, 0]
 		// normalize to a crisp line
 		if (points[1] === points[4]) {
-			points[1] = points[4] = mathRound(points[1]) + (width % 2 / 2);
+			// Substract due to #1129. Now bottom and left axis gridlines behave the same.
+			points[1] = points[4] = mathRound(points[1]) - (width % 2 / 2); 
 		}
 		if (points[2] === points[5]) {
 			points[2] = points[5] = mathRound(points[2]) + (width % 2 / 2);
@@ -1445,7 +1463,7 @@ SVGRenderer.prototype = {
 			end: end || 0
 		});
 	},
-
+	
 	/**
 	 * Draw and return a rectangle
 	 * @param {Number} x Left position
@@ -1456,21 +1474,20 @@ SVGRenderer.prototype = {
 	 * @param {Number} strokeWidth A stroke width can be supplied to allow crisp drawing
 	 */
 	rect: function (x, y, width, height, r, strokeWidth) {
-		if (isObject(x)) {
-			y = x.y;
-			width = x.width;
-			height = x.height;
-			r = x.r;
-			strokeWidth = x.strokeWidth;
-			x = x.x;
-		}
+		
+		r = isObject(x) ? x.r : r;
+		
 		var wrapper = this.createElement('rect').attr({
-			rx: r,
-			ry: r,
-			fill: NONE
-		});
-
-		return wrapper.attr(wrapper.crisp(strokeWidth, x, y, mathMax(width, 0), mathMax(height, 0)));
+				rx: r,
+				ry: r,
+				fill: NONE
+			});
+		return wrapper.attr(
+				isObject(x) ? 
+					x : 
+					// do not crispify when an object is passed in (as in column charts)
+					wrapper.crisp(strokeWidth, x, y, mathMax(width, 0), mathMax(height, 0))
+			);
 	},
 
 	/**
@@ -1697,6 +1714,7 @@ SVGRenderer.prototype = {
 				radius = options.r || w || h,
 				end = options.end - 0.000001, // to prevent cos and sin of start and end from becoming equal on 360 arcs
 				innerRadius = options.innerR,
+				open = options.open,
 				cosStart = mathCos(start),
 				sinStart = mathSin(start),
 				cosEnd = mathCos(end),
@@ -1715,7 +1733,7 @@ SVGRenderer.prototype = {
 				1, // clockwise
 				x + radius * cosEnd,
 				y + radius * sinEnd,
-				options.open ? M : L,
+				open ? M : L,
 				x + innerRadius * cosEnd,
 				y + innerRadius * sinEnd,
 				'A', // arcTo
@@ -1727,7 +1745,7 @@ SVGRenderer.prototype = {
 				x + innerRadius * cosStart,
 				y + innerRadius * sinStart,
 
-				'Z' // close
+				open ? '' : 'Z' // close
 			];
 		}
 	},
@@ -1893,6 +1911,13 @@ SVGRenderer.prototype = {
 				fontFamily: defaultChartStyle.fontFamily,
 				fontSize: defaultChartStyle.fontSize
 			});
+		
+		// Prevent wrapping from creating false offsetWidths in export in legacy IE (#1079, #1063)	
+		if (!hasSVG && renderer.forExport) {
+			wrapper.css({
+				position: ABSOLUTE
+			});
+		}
 
 		wrapper.x = x;
 		wrapper.y = y;
@@ -1952,33 +1977,55 @@ SVGRenderer.prototype = {
 			wrapper.add = function (svgGroupWrapper) {
 
 				var htmlGroup,
-					htmlGroupStyle,
-					container = renderer.box.parentNode;
+					container = renderer.box.parentNode,
+					parentGroup,
+					parents = [];
 
 				// Create a mock group to hold the HTML elements
 				if (svgGroupWrapper) {
 					htmlGroup = svgGroupWrapper.div;
 					if (!htmlGroup) {
-						htmlGroup = svgGroupWrapper.div = createElement(DIV, {
-							className: attr(svgGroupWrapper.element, 'class')
-						}, {
-							position: ABSOLUTE,
-							left: svgGroupWrapper.attr('translateX') + PX,
-							top: svgGroupWrapper.attr('translateY') + PX
-						}, container);
-
-						// Ensure dynamic updating position
-						htmlGroupStyle = htmlGroup.style;
-						extend(svgGroupWrapper.attrSetters, {
-							translateX: function (value) {
-								htmlGroupStyle.left = value + PX;
-							},
-							translateY: function (value) {
-								htmlGroupStyle.top = value + PX;
-							},
-							visibility: function (value, key) {
-								htmlGroupStyle[key] = value;
-							}
+						
+						// Read the parent chain into an array and read from top down
+						parentGroup = svgGroupWrapper;
+						while (parentGroup) {
+						
+							parents.push(parentGroup);
+						
+							// Move up to the next parent group
+							parentGroup = parentGroup.parentGroup;
+						}
+						
+						// Ensure dynamically updating position when any parent is translated
+						each(parents.reverse(), function (parentGroup) {
+							var htmlGroupStyle;
+								
+							// Create a HTML div and append it to the parent div to emulate 
+							// the SVG group structure
+							htmlGroup = parentGroup.div = parentGroup.div || createElement(DIV, {
+								className: attr(parentGroup.element, 'class')
+							}, {
+								position: ABSOLUTE,
+								left: (parentGroup.translateX || 0) + PX,
+								top: (parentGroup.translateY || 0) + PX
+							}, htmlGroup || container); // the top group is appended to container
+							
+							// Shortcut
+							htmlGroupStyle = htmlGroup.style;
+							
+							// Set listeners to update the HTML div's position whenever the SVG group
+							// position is changed
+							extend(parentGroup.attrSetters, {
+								translateX: function (value) {
+									htmlGroupStyle.left = value + PX;
+								},
+								translateY: function (value) {
+									htmlGroupStyle.top = value + PX;
+								},
+								visibility: function (value, key) {
+									htmlGroupStyle[key] = value;
+								}
+							});
 						});
 
 					}
@@ -2038,8 +2085,8 @@ SVGRenderer.prototype = {
 			text = renderer.text('', 0, 0, useHTML)
 				.attr({
 					zIndex: 1
-				})
-				.add(wrapper),
+				}),
+				//.add(wrapper),
 			box,
 			bBox,
 			alignFactor = 0,
@@ -2133,12 +2180,14 @@ SVGRenderer.prototype = {
 		}
 
 		function getSizeAfterAdd() {
+			text.add(wrapper);
 			wrapper.attr({
 				text: str, // alignment is available now
 				x: x,
 				y: y
 			});
-			if (wrapper.symbolName) {
+			
+			if (defined(anchorX)) {
 				wrapper.attr({
 					anchorX: anchorX,
 					anchorY: anchorY

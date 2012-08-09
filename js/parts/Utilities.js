@@ -213,6 +213,18 @@ function extendClass(parent, members) {
 }
 
 /**
+ * How many decimals are there in a number
+ */
+function getDecimals(number) {
+	
+	number = (number || 0).toString();
+	
+	return number.indexOf('.') > -1 ? 
+		number.split('.')[1].length :
+		0;
+}
+
+/**
  * Format a number and return a string based on input settings
  * @param {Number} number The input number to format
  * @param {Number} decimals The amount of decimals
@@ -223,7 +235,9 @@ function numberFormat(number, decimals, decPoint, thousandsSep) {
 	var lang = defaultOptions.lang,
 		// http://kevin.vanzonneveld.net/techblog/article/javascript_equivalent_for_phps_number_format/
 		n = number,
-		c = isNaN(decimals = mathAbs(decimals)) ? 2 : decimals,
+		c = decimals === -1 ?
+			getDecimals(number) :
+			(isNaN(decimals = mathAbs(decimals)) ? 2 : decimals),
 		d = decPoint === undefined ? lang.decimalPoint : decPoint,
 		t = thousandsSep === undefined ? lang.thousandsSep : thousandsSep,
 		s = n < 0 ? "-" : "",
@@ -508,7 +522,10 @@ function getTimeTicks(normalizedInterval, min, max, startOfWeek) {
 	minYear = minDate[getFullYear]();
 	var time = minDate.getTime(),
 		minMonth = minDate[getMonth](),
-		minDateDate = minDate[getDate]();
+		minDateDate = minDate[getDate](),
+		timezoneOffset = useUTC ? 
+			0 : 
+			(24 * 3600 * 1000 + minDate.getTimezoneOffset() * 60 * 1000) % (24 * 3600 * 1000); // #950
 
 	// iterate and add tick positions at appropriate values
 	while (time < max) {
@@ -533,7 +550,7 @@ function getTimeTicks(normalizedInterval, min, max, startOfWeek) {
 			time += interval * count;
 			
 			// mark new days if the time is dividable by day
-			if (interval <= timeUnits[HOUR] && time % timeUnits[DAY] === 0) {
+			if (interval <= timeUnits[HOUR] && time % timeUnits[DAY] === timezoneOffset) {
 				higherRanks[time] = DAY;
 			}
 		}
@@ -700,6 +717,16 @@ function correctFloat(num) {
 	return parseFloat(
 		num.toPrecision(14)
 	);
+}
+
+/**
+ * Set the global animation to either a given value, or fall back to the
+ * given chart's animation option
+ * @param {Object} animation
+ * @param {Object} chart
+ */
+function setAnimation(animation, chart) {
+	globalAnimation = pick(animation, chart.animation);
 }
 
 /**

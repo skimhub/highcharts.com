@@ -213,7 +213,7 @@ var VMLElement = {
 						if (shadows) {
 							i = shadows.length;
 							while (i--) {
-								shadows[i].path = value;
+								shadows[i].path = shadows[i].cutOff ? this.cutOffPath(value, shadows[i].cutOff) : value;
 							}
 						}
 						skipAttr = true;
@@ -354,21 +354,27 @@ var VMLElement = {
 	 */
 	clip: function (clipRect) {
 		var wrapper = this,
-			clipMembers = clipRect.members,
+			clipMembers,
 			element = wrapper.element,
 			parentNode = element.parentNode;
 
-		clipMembers.push(wrapper);
-		wrapper.destroyClip = function () {
-			erase(clipMembers, wrapper);
-		};
+		if (!clipRect) {
+			wrapper.destroyClip();
+		} else {
+			clipMembers = clipRect.members;
+			clipMembers.push(wrapper);
+			wrapper.destroyClip = function () {
+				erase(clipMembers, wrapper);
+			};
 		
-		// Issue #863 workaround - related to #140, #61, #74
-		if (parentNode && parentNode.className === 'highcharts-tracker' && !docMode8) {
-			css(element, { visibility: HIDDEN });
+			// Issue #863 workaround - related to #140, #61, #74
+			if (parentNode && parentNode.className === 'highcharts-tracker' && !docMode8) {
+				css(element, { visibility: HIDDEN });
+			}
+			
 		}
 		
-		return wrapper.css(clipRect.getCSS(wrapper));
+		return wrapper.css(clipRect ? clipRect.getCSS(wrapper) : { clip: 'inherit' });	
 	},
 
 	/**
@@ -432,12 +438,28 @@ var VMLElement = {
 		};
 		return this;
 	},
+	
+	/**
+	 * In stacked columns, cut off the shadows so that they don't overlap
+	 */
+	cutOffPath: function (path, length) {
+		
+		var len;
+		
+		path = path.split(/[ ,]/);
+		len = path.length;
+		
+		if (len === 9 || len === 11) {
+			path[len - 4] = path[len - 2] = pInt(path[len - 2]) - 10 * length;
+		}
+		return path.join(' ');		
+	},
 
 	/**
 	 * Apply a drop shadow by copying elements and giving them different strokes
-	 * @param {Boolean} apply
+	 * @param {Boolean|Object} shadowOptions
 	 */
-	shadow: function (apply, group) {
+	shadow: function (shadowOptions, group, cutOff) {
 		var shadows = [],
 			i,
 			element = this.element,
@@ -445,27 +467,46 @@ var VMLElement = {
 			shadow,
 			elemStyle = element.style,
 			markup,
-			path = element.path;
+			path = element.path,
+			strokeWidth,
+			modifiedPath,
+			shadowWidth,
+			shadowElementOpacity;
 
 		// some times empty paths are not strings
 		if (path && typeof path.value !== 'string') {
 			path = 'x';
 		}
+		modifiedPath = path;
 
-		if (apply) {
+		if (shadowOptions) {
+			shadowWidth = pick(shadowOptions.width, 3);
+			shadowElementOpacity = (shadowOptions.opacity || 0.15) / shadowWidth;
 			for (i = 1; i <= 3; i++) {
-				markup = ['<shape isShadow="true" strokeweight="', (7 - 2 * i),
-					'" filled="false" path="', path,
+				
+				strokeWidth = (shadowWidth * 2) + 1 - (2 * i);
+				
+				// Cut off shadows for stacked column items
+				if (cutOff) {
+					modifiedPath = this.cutOffPath(path.value, strokeWidth + 0.5);
+				}
+				
+				markup = ['<shape isShadow="true" strokeweight="', strokeWidth,
+					'" filled="false" path="', modifiedPath,
 					'" coordsize="10 10" style="', element.style.cssText, '" />'];
+				
 				shadow = createElement(renderer.prepVML(markup),
 					null, {
-						left: pInt(elemStyle.left) + 1,
-						top: pInt(elemStyle.top) + 1
+						left: pInt(elemStyle.left) + (shadowOptions.offsetX || 1),
+						top: pInt(elemStyle.top) + (shadowOptions.offsetY || 1)
 					}
 				);
-
+				if (cutOff) {
+					shadow.cutOff = strokeWidth + 1;
+				}
+				
 				// apply the opacity
-				markup = ['<stroke color="black" opacity="', (0.05 * i), '"/>'];
+				markup = ['<stroke color="', shadowOptions.color || 'black', '" opacity="', shadowElementOpacity * i, '"/>'];
 				createElement(renderer.prepVML(markup), null, null, shadow);
 
 
@@ -616,7 +657,8 @@ var VMLRendererExtension = { // inherit SVGRenderer
 		var colorObject,
 			regexRgba = /^rgba/,
 			markup,
-			fillType;
+			fillType,
+			ret = NONE;
 
 		// Check for linear or radial gradient
 		if (color && color.linearGradient) {
@@ -638,29 +680,32 @@ var VMLRendererExtension = { // inherit SVGRenderer
 				angle,
 				opacity1,
 				opacity2,
+				color1,
+				color2,
 				fillAttr = '',
+				stops = color.stops,
+				firstStop,
+				lastStop,
 				colors = [];
 			
-			// Handle linear gradient angle
-			if (fillType === 'gradient') {
-				x1 = gradient.x1 || gradient[0] || 0;
-				y1 = gradient.y1 || gradient[1] || 0;
-				x2 = gradient.x2 || gradient[2] || 0;
-				y2 = gradient.y2 || gradient[3] || 0;
-				angle = 90  - math.atan(
-					(y2 - y1) / // y vector
-					(x2 - x1) // x vector
-					) * 180 / mathPI;
-				
-			} else { // fillType === 'pattern'
-				/*fillAttr = 'src="http://midiwebconcept.free.fr/grad1.jpg" ' +
-					'size="1,1" ' +
-					'origin="100,100" ';*/
-					console.log("TODO: implement radial gradient");
+			// Extend from 0 to 1
+			firstStop = stops[0];
+			lastStop = stops[stops.length - 1];
+			if (firstStop[0] > 0) {
+				stops.unshift([
+					0,
+					firstStop[1]
+				]);
+			}
+			if (lastStop[0] < 1) {
+				stops.push([
+					1,
+					lastStop[1]
+				]);
 			}
 
 			// Compute the stops
-			each(color.stops, function (stop, i) {
+			each(stops, function (stop, i) {
 				if (regexRgba.test(stop[1])) {
 					colorObject = Color(stop[1]);
 					stopColor = colorObject.get('rgb');
@@ -676,10 +721,55 @@ var VMLRendererExtension = { // inherit SVGRenderer
 				// Only start and end opacities are allowed, so we use the first and the last
 				if (!i) {
 					opacity1 = stopOpacity;
+					color2 = stopColor;
 				} else {
 					opacity2 = stopOpacity;
+					color1 = stopColor;
 				}
 			});
+			
+			// Handle linear gradient angle
+			if (fillType === 'gradient') {
+				x1 = gradient.x1 || gradient[0] || 0;
+				y1 = gradient.y1 || gradient[1] || 0;
+				x2 = gradient.x2 || gradient[2] || 0;
+				y2 = gradient.y2 || gradient[3] || 0;
+				angle = 90  - math.atan(
+					(y2 - y1) / // y vector
+					(x2 - x1) // x vector
+					) * 180 / mathPI;
+				
+			// Radial (circular) gradient
+			} else { 
+				// pie:       http://jsfiddle.net/highcharts/66g8H/
+				// reference: http://jsfiddle.net/highcharts/etznJ/
+				// http://jsfiddle.net/highcharts/XRbCc/
+				// http://jsfiddle.net/highcharts/F3fwR/
+				// TODO:
+				// - correct for radialRefeence
+				// - check whether gradient stops are supported
+				// - add global option for gradient image (must relate to version)
+				var r = gradient.r,
+					size = r * 2,
+					cx = gradient.cx,
+					cy = gradient.cy;
+					//radialReference = elem.radialReference;
+				
+				//if (radialReference) {
+					// Try setting pixel size, or other way to adjust the gradient size to the bounding box
+				//}
+				fillAttr = 'src="http://code.highcharts.com/gfx/radial-gradient.png" ' +
+					'size="' + size + ',' + size + '" ' +
+					'origin="0.5,0.5" ' +
+					'position="' + cx + ',' + cy + '" ' +
+					'color2="' + color2 + '" ';
+				
+				// The fill element's color attribute is broken in IE8 standards mode, so we
+				// need to set the parent shape's fillcolor attribute instead.
+				ret = color1;
+			}
+			
+			
 
 			// Apply the gradient to fills only.
 			if (prop === 'fill') {
@@ -693,7 +783,7 @@ var VMLRendererExtension = { // inherit SVGRenderer
 			
 			// Gradients are not supported for VML stroke, return the first color. #722.
 			} else {
-				return stopColor;
+				ret = stopColor;
 			}
 
 
@@ -706,7 +796,7 @@ var VMLRendererExtension = { // inherit SVGRenderer
 			markup = ['<', prop, ' opacity="', colorObject.get('a'), '"/>'];
 			createElement(this.prepVML(markup), null, null, elem);
 
-			return colorObject.get('rgb');
+			ret = colorObject.get('rgb');
 
 
 		} else {
@@ -714,9 +804,10 @@ var VMLRendererExtension = { // inherit SVGRenderer
 			if (strokeNodes.length) {
 				strokeNodes[0].opacity = 1;
 			}
-			return color;
+			ret = color;
 		}
 
+		return ret;
 	},
 
 	/**
@@ -851,11 +942,10 @@ var VMLRendererExtension = { // inherit SVGRenderer
 	 */
 	invertChild: function (element, parentNode) {
 		var parentStyle = parentNode.style;
-		console.log('Warning in VMLRenderer.js: We may have to replace 10 for 1 below after changing the coordsize');
 		css(element, {
 			flip: 'x',
-			left: pInt(parentStyle.width) - 10,
-			top: pInt(parentStyle.height) - 10,
+			left: pInt(parentStyle.width) - 1,
+			top: pInt(parentStyle.height) - 1,
 			rotation: -90
 		});
 	},
@@ -954,58 +1044,62 @@ var VMLRendererExtension = { // inherit SVGRenderer
 		 */
 
 		rect: function (left, top, width, height, options) {
-			/*for (var n in r) {
-				logTime && console .log(n)
-				}*/
-
-			if (!defined(options)) {
-				return [];
-			}
+			
 			var right = left + width,
 				bottom = top + height,
-				r = mathMin(options.r || 0, width, height);
+				ret,
+				r;
 
-			return [
-				M,
-				left + r, top,
-
-				L,
-				right - r, top,
-				'wa',
-				right - 2 * r, top,
-				right, top + 2 * r,
-				right - r, top,
-				right, top + r,
-
-				L,
-				right, bottom - r,
-				'wa',
-				right - 2 * r, bottom - 2 * r,
-				right, bottom,
-				right, bottom - r,
-				right - r, bottom,
-
-				L,
-				left + r, bottom,
-				'wa',
-				left, bottom - 2 * r,
-				left + 2 * r, bottom,
-				left + r, bottom,
-				left, bottom - r,
-
-				L,
-				left, top + r,
-				'wa',
-				left, top,
-				left + 2 * r, top + 2 * r,
-				left, top + r,
-				left + r, top,
-
-
-				'x',
-				'e'
-			];
-
+			// No radius, return the more lightweight square
+			if (!defined(options) || !options.r) {
+				ret = SVGRenderer.prototype.symbols.square.apply(0, arguments);
+				
+			// Has radius add arcs for the corners
+			} else {
+			
+				r = mathMin(options.r, width, height);
+				ret = [
+					M,
+					left + r, top,
+	
+					L,
+					right - r, top,
+					'wa',
+					right - 2 * r, top,
+					right, top + 2 * r,
+					right - r, top,
+					right, top + r,
+	
+					L,
+					right, bottom - r,
+					'wa',
+					right - 2 * r, bottom - 2 * r,
+					right, bottom,
+					right, bottom - r,
+					right - r, bottom,
+	
+					L,
+					left + r, bottom,
+					'wa',
+					left, bottom - 2 * r,
+					left + 2 * r, bottom,
+					left + r, bottom,
+					left, bottom - r,
+	
+					L,
+					left, top + r,
+					'wa',
+					left, top,
+					left + 2 * r, top + 2 * r,
+					left, top + r,
+					left + r, top,
+	
+	
+					'x',
+					'e'
+				];
+			}
+			return ret;
 		}
 	}
 };

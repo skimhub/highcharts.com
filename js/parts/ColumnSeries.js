@@ -7,6 +7,7 @@ defaultPlotOptions.column = merge(defaultSeriesOptions, {
 	borderRadius: 0,
 	//colorByPoint: undefined,
 	groupPadding: 0.2,
+	//grouping: true, // docs
 	marker: null, // point options are specified in the base options
 	pointPadding: 0.1,
 	//pointWidth: null,
@@ -43,6 +44,10 @@ var ColumnSeries = extendClass(Series, {
 		fill: 'color',
 		r: 'borderRadius'
 	},
+	
+	/**
+	 * Initialize the series
+	 */
 	init: function () {
 		Series.prototype.init.apply(this, arguments);
 
@@ -81,34 +86,41 @@ var ColumnSeries = extendClass(Series, {
 		// Get the total number of column type series.
 		// This is called on every series. Consider moving this logic to a
 		// chart.orderStacks() function and call it on init, addSeries and removeSeries
-		each(chart.series, function (otherSeries) {
-			if (otherSeries.type === series.type && otherSeries.visible &&
-					series.options.group === otherSeries.options.group) { // used in Stock charts navigator series
-				if (otherSeries.options.stacking) {
-					stackKey = otherSeries.stackKey;
-					if (stackGroups[stackKey] === UNDEFINED) {
-						stackGroups[stackKey] = columnCount++;
+		if (options.grouping === false) {
+			columnCount = 1;
+		
+		} else {
+			each(chart.series, function (otherSeries) {
+				var otherOptions = otherSeries.options;
+				if (otherSeries.type === series.type && otherSeries.visible &&
+						series.options.group === otherOptions.group) { // used in Stock charts navigator series
+					if (otherOptions.stacking) {
+						stackKey = otherSeries.stackKey;
+						if (stackGroups[stackKey] === UNDEFINED) {
+							stackGroups[stackKey] = columnCount++;
+						}
+						columnIndex = stackGroups[stackKey];
+					} else if (otherOptions.grouping !== false) { // #1162
+						columnIndex = columnCount++;
 					}
-					columnIndex = stackGroups[stackKey];
-				} else {
-					columnIndex = columnCount++;
+					otherSeries.columnIndex = columnIndex;
 				}
-				otherSeries.columnIndex = columnIndex;
-			}
-		});
+			});
+		}
 
 		// calculate the width and position of each column based on
 		// the number of column series in the plot, the groupPadding
 		// and the pointPadding options
 		var points = series.points,
-			categoryWidth = mathAbs(xAxis.translationSlope) * (xAxis.ordinalSlope || xAxis.closestPointRange || 1),
+			categoryWidth = mathAbs(xAxis.transA) * (xAxis.ordinalSlope || options.pointRange || xAxis.closestPointRange || 1),
 			groupPadding = categoryWidth * options.groupPadding,
 			groupWidth = categoryWidth - 2 * groupPadding,
 			pointOffsetWidth = groupWidth / columnCount,
 			optionPointWidth = options.pointWidth,
 			pointPadding = defined(optionPointWidth) ? (pointOffsetWidth - optionPointWidth) / 2 :
 				pointOffsetWidth * options.pointPadding,
-			pointWidth = mathCeil(mathMax(pick(optionPointWidth, pointOffsetWidth - 2 * pointPadding), 1 + 2 * borderWidth)),
+			pointWidth = pick(optionPointWidth, pointOffsetWidth - 2 * pointPadding), // exact point width, used in polar charts
+			barW = mathCeil(mathMax(pointWidth, 1 + 2 * borderWidth)), // rounded and postprocessed for border width
 			colIndex = (reversedXAxis ? columnCount -
 				series.columnIndex : series.columnIndex) || 0,
 			pointXOffset = pointPadding + (groupPadding + colIndex *
@@ -130,7 +142,7 @@ var ColumnSeries = extendClass(Series, {
 
 			// Record the offset'ed position and width of the bar to be able to align the stacking total correctly
 			if (stacking && series.visible && stack && stack[point.x]) {
-				stack[point.x].setOffset(pointXOffset, pointWidth);
+				stack[point.x].setOffset(pointXOffset, barW);
 			}
 
 			// handle options.minPointLength
@@ -147,26 +159,19 @@ var ColumnSeries = extendClass(Series, {
 			extend(point, {
 				barX: barX,
 				barY: barY,
-				barW: pointWidth,
-				barH: barH
+				barW: barW,
+				barH: barH,
+				pointWidth: pointWidth
 			});
 
 			// create shape type and shape args that are reused in drawPoints and drawTracker
 			point.shapeType = 'rect';
-			shapeArgs = {
-				x: barX,
-				y: barY,
-				width: pointWidth,
-				height: barH,
-				r: options.borderRadius,
-				strokeWidth: borderWidth
-			};
+			point.shapeArgs = shapeArgs = chart.renderer.Element.prototype.crisp.call(0, borderWidth, barX, barY, barW, barH); 
 			
 			if (borderWidth % 2) { // correct for shorting in crisp method, visible in stacked columns with 1px border
 				shapeArgs.y -= 1;
 				shapeArgs.height += 1;
 			}
-			point.shapeArgs = shapeArgs;
 
 			// make small columns responsive to mouse
 			point.trackerArgs = mathAbs(barH) < 3 && merge(point.shapeArgs, {
@@ -212,20 +217,13 @@ var ColumnSeries = extendClass(Series, {
 				shapeArgs = point.shapeArgs;
 				if (graphic) { // update
 					stop(graphic);
-					graphic.animate(renderer.Element.prototype.crisp.apply({}, [
-						shapeArgs.strokeWidth,
-						shapeArgs.x,
-						shapeArgs.y,
-						shapeArgs.width,
-						shapeArgs.height
-					]));
+					graphic.animate(merge(shapeArgs));
 
 				} else {
 					point.graphic = graphic = renderer[point.shapeType](shapeArgs)
 						.attr(point.pointAttr[point.selected ? SELECT_STATE : NORMAL_STATE])
 						.add(series.group)
-						.shadow(options.shadow);
-						
+						.shadow(options.shadow, null, options.stacking && !options.borderRadius);
 				}
 
 			}
@@ -245,7 +243,7 @@ var ColumnSeries = extendClass(Series, {
 			options = series.options,
 			cursor = options.cursor,
 			css = cursor && { cursor: cursor },
-			trackerGroup = series.drawTrackerGroup(),
+			trackerGroup = series.isCartesian && series.plotGroup('trackerGroup', null, VISIBLE, options.zIndex || 1, chart.trackerGroup),
 			rel,
 			plotY,
 			validPlotY;

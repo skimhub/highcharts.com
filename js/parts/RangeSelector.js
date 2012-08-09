@@ -173,8 +173,11 @@ RangeSelector.prototype = {
 					newMin,
 					newMax,
 					pick(redraw, 1),
-					0,
-					{ rangeSelectorButton: rangeOptions }
+					0, 
+					{ 
+						trigger: 'rangeSelectorButton', // docs
+						rangeSelectorButton: rangeOptions
+					}
 				);
 				rangeSelector.selected = i;
 			}, 1);
@@ -219,7 +222,7 @@ RangeSelector.prototype = {
 		// normalize the pressed button whenever a new range is selected
 		addEvent(chart, 'load', function () {
 			addEvent(chart.xAxis[0], 'afterSetExtremes', function () {
-				if (buttons[rangeSelector.selected]) {
+				if (buttons[rangeSelector.selected] && !chart.renderer.forExport) {
 					buttons[rangeSelector.selected].setState(0);
 				}
 				rangeSelector.selected = null;
@@ -281,7 +284,7 @@ RangeSelector.prototype = {
 
 
 		input.onfocus = input.onblur = function (e) {
-			e = e || window.event;
+			e = e || window.event || {};
 			input.hasFocus = e.type === 'focus';
 			rangeSelector.setInputValue(input);
 		};
@@ -305,7 +308,10 @@ RangeSelector.prototype = {
 			) {
 				chart.xAxis[0].setExtremes(
 					isMin ? value : extremes.min,
-					isMin ? extremes.max : value
+					isMin ? extremes.max : value,
+					UNDEFINED,
+					UNDEFINED,
+					{ trigger: 'rangeSelectorInput' }
 				);
 			}
 		};

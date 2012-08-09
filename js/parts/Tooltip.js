@@ -13,9 +13,6 @@ function Tooltip(chart, options) {
 	this.chart = chart;
 	this.options = options;
 
-	// remove padding CSS and apply padding on box instead
-	style.padding = 0;
-
 	// Keep track of the current series
 	//this.currentSeries = UNDEFINED;
 
@@ -23,17 +20,16 @@ function Tooltip(chart, options) {
 	this.crosshairs = [];
 
 	// Current values of x and y when animating
-	this.currentX = 0;
-	this.currentY = 0;
+	this.now = { x: 0, y: 0 };
 
 	// The tooltipTick function, initialized to nothing
 	//this.tooltipTick = UNDEFINED;
 
 	// The tooltip is initially hidden
-	this.tooltipIsHidden = true;
+	this.isHidden = true;
 
 	// create the label
-	this.label = chart.renderer.label('', 0, 0, null, null, null, options.useHTML, null, 'tooltip')
+	this.label = chart.renderer.label('', 0, 0, options.shape, null, null, options.useHTML, null, 'tooltip')
 		.attr({
 			padding: padding,
 			fill: options.backgroundColor,
@@ -42,6 +38,7 @@ function Tooltip(chart, options) {
 			zIndex: 8
 		})
 		.css(style)
+		.css({ padding: 0 }) // Remove it from VML, the padding is applied as an attribute instead (#1117)
 		.hide()
 		.add();
 
@@ -75,24 +72,30 @@ Tooltip.prototype = {
 	/**
 	 * Provide a soft movement for the tooltip
 	 *
-	 * @param {Number} finalX
-	 * @param {Number} finalY
+	 * @param {Number} x
+	 * @param {Number} y
 	 * @private
 	 */
-	move: function (finalX, finalY) {
-		var tooltip = this;
+	move: function (x, y, anchorX, anchorY) {
+		var tooltip = this,
+			now = tooltip.now,
+			isHidden = tooltip.isHidden;
 
 		// get intermediate values for animation
-		tooltip.currentX = tooltip.tooltipIsHidden ? finalX : (2 * tooltip.currentX + finalX) / 3;
-		tooltip.currentY = tooltip.tooltipIsHidden ? finalY : (tooltip.currentY + finalY) / 2;
+		extend(now, {
+			x: isHidden ? x : (2 * now.x + x) / 3,
+			y: isHidden ? y : (now.y + y) / 2,
+			anchorX: isHidden ? anchorX : (2 * now.anchorX + anchorX) / 3,
+			anchorY: isHidden ? anchorY : (now.anchorY + anchorY) / 2
+		});
 
 		// move to the intermediate value
-		tooltip.label.attr({ x: tooltip.currentX, y: tooltip.currentY });
+		tooltip.label.attr(now);
 
 		// run on next tick of the mouse tracker
-		if (mathAbs(finalX - tooltip.currentX) > 1 || mathAbs(finalY - tooltip.currentY) > 1) {
+		if (mathAbs(x - now.x) > 1 || mathAbs(y - now.y) > 1) {
 			tooltip.tooltipTick = function () {
-				tooltip.move(finalX, finalY);
+				tooltip.move(x, y, anchorX, anchorY);
 			};
 		} else {
 			tooltip.tooltipTick = null;
@@ -103,7 +106,7 @@ Tooltip.prototype = {
 	 * Hide the tooltip
 	 */
 	hide: function () {
-		if (!this.tooltipIsHidden) {
+		if (!this.isHidden) {
 			var hoverPoints = this.chart.hoverPoints;
 
 			this.label.hide();
@@ -116,7 +119,7 @@ Tooltip.prototype = {
 			}
 
 			this.chart.hoverPoints = null;
-			this.tooltipIsHidden = true;
+			this.isHidden = true;
 		}
 	},
 
@@ -135,7 +138,7 @@ Tooltip.prototype = {
 	 * Extendable method to get the anchor position of the tooltip
 	 * from a point or set of points
 	 */
-	getAnchor: function (points) {
+	getAnchor: function (points, mouseEvent) {
 		var ret,
 			chart = this.chart,
 			inverted = chart.inverted,
@@ -159,7 +162,9 @@ Tooltip.prototype = {
 			
 			ret = [
 				inverted ? chart.plotWidth - plotY : plotX,
-				inverted ? chart.plotHeight - plotX : plotY
+				this.shared && !inverted && points.length > 1 && mouseEvent ? 
+					mouseEvent.chartY - chart.plotTop : // place shared tooltip next to the mouse (#424)
+					inverted ? chart.plotHeight - plotX : plotY
 			];
 		}
 
@@ -174,10 +179,13 @@ Tooltip.prototype = {
 		
 		// Set up the variables
 		var chart = this.chart,
-			plotLeft = chart.plotLeft,
-			plotTop = chart.plotTop,
-			plotWidth = chart.plotWidth,
-			plotHeight = chart.plotHeight,
+			series = point.series,
+			xAxis = series && series.xAxis,
+			yAxis = series && series.yAxis,
+			plotLeft = (xAxis && xAxis.left) || chart.plotLeft,
+			plotTop = (yAxis && yAxis.top) || chart.plotTop,
+			plotWidth = (xAxis && xAxis.len) || chart.plotWidth,
+			plotHeight = (yAxis && yAxis.len) || chart.plotHeight,
 			distance = pick(this.options.distance, 12),
 			pointX = point.plotX,
 			pointY = point.plotY,
@@ -211,7 +219,7 @@ Tooltip.prototype = {
 		// Now if the tooltip is below the chart, move it up. It's better to cover the
 		// point than to disappear outside the chart. #834.
 		if (y + boxHeight > plotTop + plotHeight) {
-			y = plotTop + plotHeight - boxHeight - distance; // below
+			y = mathMax(plotTop, plotTop + plotHeight - boxHeight - distance); // below
 		}
 		
 	
@@ -222,7 +230,7 @@ Tooltip.prototype = {
 	 * Refresh the tooltip's text and position.
 	 * @param {Object} point
 	 */
-	refresh: function (point) {
+	refresh: function (point, mouseEvent) {
 		var tooltip = this,
 			chart = tooltip.chart,
 			label = tooltip.label,
@@ -264,15 +272,18 @@ Tooltip.prototype = {
 			hoverPoints = chart.hoverPoints,
 			placedTooltipPoint,
 			borderColor,
-			crosshairsOptions = options.crosshairs;
+			crosshairsOptions = options.crosshairs,
+			shared = tooltip.shared,
+			singlePoint,
+			currentSeries;
 			
 		// get the reference point coordinates (pie charts use tooltipPos)
-		anchor = tooltip.getAnchor(point);
+		anchor = tooltip.getAnchor(point, mouseEvent);
 		x = anchor[0];
 		y = anchor[1];
 
 		// shared tooltip, array is sent over
-		if (tooltip.shared && !(point.series && point.series.noSharedTooltip)) {
+		if (shared && !(point.series && point.series.noSharedTooltip)) {
 			
 			// hide previous hoverPoints and set new
 			if (hoverPoints) {
@@ -289,7 +300,8 @@ Tooltip.prototype = {
 			});
 
 			textConfig = {
-				x: point[0].category
+				x: point[0].category,
+				y: point[0].y
 			};
 			textConfig.points = pointConfig;
 			point = point[0];
@@ -297,15 +309,16 @@ Tooltip.prototype = {
 		// single point tooltip
 		} else {
 			textConfig = point.getLabelConfig();
+			singlePoint = point;
 		}
 		text = formatter.call(textConfig);
 
 		// register the current series
-		tooltip.currentSeries = point.series;
+		currentSeries = point.series;
 
 
 		// For line type series, hide tooltip if the point falls outside the plot
-		show = tooltip.shared || !tooltip.currentSeries.isCartesian || tooltip.currentSeries.tooltipOutsidePlot || chart.isInsidePlot(x, y);
+		show = shared || !currentSeries.isCartesian || currentSeries.tooltipOutsidePlot || chart.isInsidePlot(x, y);
 
 		// update the inner HTML
 		if (text === false || !show) {
@@ -313,7 +326,7 @@ Tooltip.prototype = {
 		} else {
 
 			// show it
-			if (tooltip.tooltipIsHidden) {
+			if (tooltip.isHidden) {
 				label.show();
 			}
 
@@ -323,23 +336,28 @@ Tooltip.prototype = {
 			});
 
 			// set the stroke color of the box
-			borderColor = options.borderColor || point.color || tooltip.currentSeries.color || '#606060';
+			borderColor = options.borderColor || point.color || currentSeries.color || '#606060';
 			label.attr({
 				stroke: borderColor
 			});
 
-			placedTooltipPoint = (options.positioner || tooltip.getPosition).call( // docs
+			placedTooltipPoint = (options.positioner || tooltip.getPosition).call(
 				tooltip,
 				label.width,
 				label.height,
-				{ plotX: x, plotY: y }
+				singlePoint || { plotX: x, plotY: y }
 			);
 
 			// do the move
-			tooltip.move(mathRound(placedTooltipPoint.x), mathRound(placedTooltipPoint.y));
+			tooltip.move(
+				mathRound(placedTooltipPoint.x), 
+				mathRound(placedTooltipPoint.y), 
+				x + chart.plotLeft, 
+				y + chart.plotTop
+			);
 			
 			
-			tooltip.tooltipIsHidden = false;
+			tooltip.isHidden = false;
 		}
 
 		// crosshairs

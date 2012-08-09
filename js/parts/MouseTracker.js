@@ -79,6 +79,7 @@ MouseTracker.prototype = {
 		return extend(e, {
 			chartX: mathRound(chartX),
 			chartY: mathRound(chartY)
+		
 		});
 	},
 
@@ -103,7 +104,7 @@ MouseTracker.prototype = {
 				value: axis.translate(
 					isHorizontal ?
 						e.chartX - chart.plotLeft :
-						chart.plotHeight - e.chartY + chart.plotTop,
+						axis.top + axis.len - e.chartY, // #1051
 					true
 				)
 			});
@@ -153,7 +154,7 @@ MouseTracker.prototype = {
 			}
 			// refresh the tooltip if necessary
 			if (points.length && (points[0].plotX !== mouseTracker.hoverX)) {
-				chart.tooltip.refresh(points);
+				chart.tooltip.refresh(points, e);
 				mouseTracker.hoverX = points[0].plotX;
 			}
 		}
@@ -178,6 +179,8 @@ MouseTracker.prototype = {
 
 	/**
 	 * Reset the tracking by hiding the tooltip, the hover series state and the hover point
+	 * 
+	 * @param allowMove {Boolean} Instead of destroying the tooltip altogether, allow moving it if possible
 	 */
 	resetTracker: function (allowMove) {
 		var mouseTracker = this,
@@ -186,9 +189,17 @@ MouseTracker.prototype = {
 			hoverPoint = chart.hoverPoint,
 			tooltipPoints = chart.hoverPoints || hoverPoint,
 			tooltip = chart.tooltip;
+			
+		// Narrow in allowMove
+		allowMove = allowMove && tooltip && tooltipPoints;
+			
+		// Check if the points have moved outside the plot area, #1003
+		if (allowMove && splat(tooltipPoints)[0].plotX === UNDEFINED) {
+			allowMove = false;
+		}	
 
 		// Just move the tooltip, #349
-		if (allowMove && tooltip && tooltipPoints) {
+		if (allowMove) {
 			tooltip.refresh(tooltipPoints);
 
 		// Full reset
@@ -301,7 +312,7 @@ MouseTracker.prototype = {
 			washMouseEvent(e);
 
 			// If we're outside, hide the tooltip
-			if (mouseTracker.chartPosition &&
+			if (mouseTracker.chartPosition && chart.hoverSeries && chart.hoverSeries.isCartesian &&
 				!chart.isInsidePlot(e.pageX - mouseTracker.chartPosition.left - chart.plotLeft,
 				e.pageY - mouseTracker.chartPosition.top - chart.plotTop)) {
 					mouseTracker.resetTracker();
@@ -440,8 +451,10 @@ MouseTracker.prototype = {
 					}
 				}
 
-			} else if (!isOutsidePlot) {
-				// show the tooltip
+			} 
+			
+			// Show the tooltip and run mouse over events (#977)			
+			if (!isOutsidePlot) {
 				mouseTracker.onmousemove(e);
 			}
 
@@ -494,7 +507,9 @@ MouseTracker.prototype = {
 
 		// MooTools 1.2.3 doesn't fire this in IE when using addEvent
 		container.onclick = function (e) {
-			var hoverPoint = chart.hoverPoint;
+			var hoverPoint = chart.hoverPoint, 
+				plotX,
+				plotY;
 			e = mouseTracker.normalizeMouseEvent(e);
 
 			e.cancelBubble = true; // IE specific
@@ -503,8 +518,8 @@ MouseTracker.prototype = {
 			if (!chart.cancelClick) {
 				// Detect clicks on trackers or tracker groups, #783
 				if (hoverPoint && (attr(e.target, 'isTracker') || attr(e.target.parentNode, 'isTracker'))) {
-					var plotX = hoverPoint.plotX,
-						plotY = hoverPoint.plotY;
+					plotX = hoverPoint.plotX;
+					plotY = hoverPoint.plotY;
 
 					// add page position info
 					extend(hoverPoint, {
@@ -570,7 +585,12 @@ MouseTracker.prototype = {
 			chart.tooltip = new Tooltip(chart, options);
 
 			// set the fixed interval ticking for the smooth tooltip
-			this.tooltipInterval = setInterval(function () { chart.tooltip.tick(); }, 32);
+			this.tooltipInterval = setInterval(function () {
+				// The interval function may still be running during destroy, so check that the chart is really there before calling.
+				if (chart && chart.tooltip) {
+					chart.tooltip.tick();
+				}
+			}, 32);
 		}
 
 		this.setDOMEvents();
